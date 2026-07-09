@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { Upload, FileText, AlertCircle, CheckCircle, LayoutDashboard, FileSpreadsheet, Download, Loader2, BarChart3 } from 'lucide-react';
-import { PowerBIIntegration } from './components/PowerBIIntegration';
+import { NativeDashboard } from './components/NativeDashboard';
 
 type AnalysisResult = {
   headline: string;
@@ -37,7 +37,7 @@ function App() {
   const [viewMode, setViewMode] = useState<'report' | 'dashboard'>('report');
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(null);
   const [parsedData, setParsedData] = useState<{ headers: string[]; rows: string[][] } | null>(null);
-  const [showPowerBI, setShowPowerBI] = useState(false);
+  const [showDashboard, setShowDashboard] = useState(false);
 
   const allowedTypes = [
     'text/csv',
@@ -873,7 +873,7 @@ function App() {
             <section className="bg-[#0d2818] rounded-2xl p-6 shadow-xl border border-[#2d5a3d]">
               <h2 className="text-xl font-semibold mb-6 flex items-center gap-2">
                 <Download className="w-5 h-5" />
-                Download Report
+                Export Report
               </h2>
 
               <div className="grid grid-cols-3 gap-4">
@@ -892,20 +892,20 @@ function App() {
                   Download CSV
                 </button>
                 <button
-                  onClick={() => setShowPowerBI(!showPowerBI)}
+                  onClick={() => setShowDashboard(!showDashboard)}
                   className="py-3 px-4 bg-[#fbbf24]/20 hover:bg-[#fbbf24]/30 border border-[#fbbf24] rounded-lg font-medium transition-colors flex items-center justify-center gap-2 text-[#fbbf24]"
                 >
                   <BarChart3 className="w-4 h-4" />
-                  Power BI
+                  Dashboard
                 </button>
               </div>
             </section>
           )}
 
-          {showPowerBI && (
-            <PowerBIIntegration
-              fileData={parsedData || undefined}
-              rawData={rawData || undefined}
+          {showDashboard && parsedData && dashboardData && (
+            <NativeDashboard
+              data={parsedData}
+              summary={dashboardData}
             />
           )}
         </main>
