@@ -1,6 +1,16 @@
 import { useState, useCallback } from 'react';
-import { Upload, FileText, AlertCircle, CheckCircle, LayoutDashboard, FileSpreadsheet, Download, Loader2, BarChart3 } from 'lucide-react';
+import {
+  Upload, FileText, AlertCircle, CheckCircle, LayoutDashboard,
+  FileSpreadsheet, Download, Loader2, BarChart3, FileUp, X
+} from 'lucide-react';
+import { AIDashboardGenerator } from './components/AIDashboardGenerator';
 import { NativeDashboard } from './components/NativeDashboard';
+import {
+  parseRequirementsDocument,
+  analyzeRequirements,
+  mapRequirementsToData,
+  ExtractedRequirements
+} from './utils/requirementsAnalyzer';
 
 type AnalysisResult = {
   headline: string;
@@ -28,16 +38,22 @@ type DashboardData = {
 
 function App() {
   const [file, setFile] = useState<File | null>(null);
+  const [requirementsFile, setRequirementsFile] = useState<File | null>(null);
   const [error, setError] = useState<string>('');
   const [analyzing, setAnalyzing] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState<string>('');
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [rawData, setRawData] = useState<string>('');
-  const [customRequirement, setCustomRequirement] = useState<string>('');
-  const [viewMode, setViewMode] = useState<'report' | 'dashboard'>('report');
+  const [businessRequirements, setBusinessRequirements] = useState<string>('');
+  const [viewMode, setViewMode] = useState<'report' | 'dashboard' | 'ai-dashboard'>('report');
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(null);
   const [parsedData, setParsedData] = useState<{ headers: string[]; rows: string[][] } | null>(null);
-  const [showDashboard, setShowDashboard] = useState(false);
+  const [extractedRequirements, setExtractedRequirements] = useState<ExtractedRequirements | null>(null);
+  const [mappedData, setMappedData] = useState<{
+    mappedKPIs: { name: string; columns: string[]; aggregation: string }[];
+    mappedDimensions: { name: string; columns: string[] }[];
+    recommendedCharts: { type: string; title: string; dimension: string; metric: string }[];
+  } | null>(null);
 
   const allowedTypes = [
     'text/csv',
@@ -46,6 +62,14 @@ function App() {
   ];
 
   const allowedExtensions = ['.csv', '.xlsx', '.txt'];
+
+  const requirementsAllowedTypes = [
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/pdf',
+    'text/plain'
+  ];
+
+  const requirementsExtensions = ['.docx', '.pdf', '.txt'];
 
   const validateFile = (file: File): string | null => {
     const extension = '.' + file.name.split('.').pop()?.toLowerCase();
@@ -56,6 +80,20 @@ function App() {
 
     if (file.size > 10 * 1024 * 1024) {
       return 'File size exceeds 10MB limit.';
+    }
+
+    return null;
+  };
+
+  const validateRequirementsFile = (file: File): string | null => {
+    const extension = '.' + file.name.split('.').pop()?.toLowerCase();
+
+    if (!requirementsAllowedTypes.includes(file.type) && !requirementsExtensions.includes(extension)) {
+      return 'Unsupported requirements file type. Please upload DOCX, PDF, or TXT files.';
+    }
+
+    if (file.size > 5 * 1024 * 1024) {
+      return 'Requirements file size exceeds 5MB limit.';
     }
 
     return null;
@@ -132,12 +170,10 @@ function App() {
 
       const sum = values.reduce((a, b) => a + b, 0);
       const avg = sum / values.length;
-      const max = Math.max(...values);
-      const min = Math.min(...values);
 
-      if (/revenue|sales|income|profit/i.test(col)) {
-        keyNumbers.push(`Total ${col}: ${sum.toLocaleString(undefined, {maximumFractionDigits: 0})}`);
-        metrics.push(`${col}: Total ${sum.toLocaleString(undefined, {maximumFractionDigits: 0})}`);
+      if (/revenue|sales|income|profit|amount|value|total/i.test(col)) {
+        keyNumbers.push(`Total ${col}: ${sum.toLocaleString(undefined, { maximumFractionDigits: 0 })}`);
+        metrics.push(`${col}: Total ${sum.toLocaleString(undefined, { maximumFractionDigits: 0 })}`);
 
         if (values.length >= 4) {
           const recent = values.slice(-Math.max(1, Math.ceil(values.length / 4)));
@@ -150,16 +186,16 @@ function App() {
             trends.push(`${col} ${change > 0 ? 'up' : 'down'} ${Math.abs(change).toFixed(1)}%`);
           }
         }
-      } else if (/customer|client|user/i.test(col)) {
-        keyNumbers.push(`Total ${col}: ${sum.toLocaleString(undefined, {maximumFractionDigits: 0})}`);
-        metrics.push(`${col}: ${sum.toLocaleString(undefined, {maximumFractionDigits: 0})}`);
+      } else if (/customer|client|user|transaction|count/i.test(col)) {
+        keyNumbers.push(`Total ${col}: ${sum.toLocaleString(undefined, { maximumFractionDigits: 0 })}`);
+        metrics.push(`${col}: ${sum.toLocaleString(undefined, { maximumFractionDigits: 0 })}`);
       } else if (/churn|attrition/i.test(col)) {
         keyNumbers.push(`Avg ${col}: ${avg.toFixed(1)}%`);
         metrics.push(`${col}: ${avg.toFixed(1)}% avg`);
         if (avg > 5) issues.push(`Churn elevated at ${avg.toFixed(1)}%`);
-      } else if (/cost|expense/i.test(col)) {
-        metrics.push(`${col}: ${sum.toLocaleString(undefined, {maximumFractionDigits: 0})} total`);
-      } else if (/growth/i.test(col)) {
+      } else if (/fee|tax|cost|expense/i.test(col)) {
+        metrics.push(`${col}: ${sum.toLocaleString(undefined, { maximumFractionDigits: 0 })} total`);
+      } else if (/growth|rate|success/i.test(col)) {
         keyNumbers.push(`${col}: ${avg.toFixed(1)}%`);
         metrics.push(`${col}: ${avg.toFixed(1)}% avg`);
       }
@@ -169,12 +205,12 @@ function App() {
     let lowestRegion: string | undefined;
 
     Object.entries(textColumns).forEach(([col, values]) => {
-      if (/region|area|zone/i.test(col)) {
+      if (/region|area|zone|category|segment/i.test(col)) {
         const counts: { [key: string]: number } = {};
         values.forEach(v => { counts[v] = (counts[v] || 0) + 1; });
         const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
         if (sorted[0]) {
-          metrics.push(`Top region: ${sorted[0][0]} (${sorted[0][1]})`);
+          metrics.push(`Top ${col}: ${sorted[0][0]} (${sorted[0][1]})`);
           topRegion = sorted[0][0];
           if (sorted.length >= 2) {
             lowestRegion = sorted[sorted.length - 1][0];
@@ -229,7 +265,7 @@ function App() {
       const colLower = header.toLowerCase();
       const values = rows.map(row => row[idx]).filter(v => v !== undefined && v !== '');
 
-      if (/revenue|sales|income/i.test(colLower)) {
+      if (/revenue|sales|income|amount|value|total/i.test(colLower)) {
         const nums = values.map(v => parseFloat(v)).filter(n => !isNaN(n));
         totalRevenue = nums.reduce((a, b) => a + b, 0);
 
@@ -263,15 +299,15 @@ function App() {
         }
       }
 
-      if (/customer|client|user|count/i.test(colLower) && !/id/i.test(colLower)) {
+      if (/customer|client|user|count|transaction/i.test(colLower) && !/id/i.test(colLower)) {
         const nums = values.map(v => parseFloat(v)).filter(n => !isNaN(n));
         if (nums.length > 0) {
           totalCustomers = nums.reduce((a, b) => a + b, 0);
         }
       }
 
-      if (/region|area|zone|territory/i.test(colLower)) {
-        const revenueIdx = headers.findIndex(h => /revenue|sales|income/i.test(h.toLowerCase()));
+      if (/region|area|zone|territory|category|segment/i.test(colLower)) {
+        const revenueIdx = headers.findIndex(h => /revenue|sales|income|amount/i.test(h.toLowerCase()));
         values.forEach((v, rowIdx) => {
           if (!regionMap[v]) regionMap[v] = { count: 0, revenue: 0, values: [] };
           regionMap[v].count++;
@@ -330,6 +366,8 @@ function App() {
     setParsedData(null);
     setDashboardData(null);
     setLoadingMessage('');
+    setExtractedRequirements(null);
+    setMappedData(null);
 
     if (!uploadedFile) return;
 
@@ -343,9 +381,25 @@ function App() {
     setFile(uploadedFile);
   }, []);
 
+  const handleRequirementsUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const uploadedFile = e.target.files?.[0];
+    setError('');
+
+    if (!uploadedFile) return;
+
+    const validationError = validateRequirementsFile(uploadedFile);
+    if (validationError) {
+      setError(validationError);
+      setRequirementsFile(null);
+      return;
+    }
+
+    setRequirementsFile(uploadedFile);
+  }, []);
+
   const handleAnalyze = async () => {
     if (!file) {
-      setError('Please upload a file first.');
+      setError('Please upload a data file first.');
       return;
     }
 
@@ -359,62 +413,41 @@ function App() {
       const parsed = parseDataStructure(data);
       setParsedData(parsed);
 
-      setLoadingMessage('Generating insights...');
+      setLoadingMessage('Analyzing business requirements...');
 
-      await new Promise(resolve => setTimeout(resolve, 600));
+      // Parse requirements if uploaded
+      let requirements: ExtractedRequirements | null = null;
+      if (requirementsFile) {
+        const reqText = await parseRequirementsDocument(requirementsFile);
+        requirements = analyzeRequirements(reqText);
+        setExtractedRequirements(requirements);
+      } else if (businessRequirements.trim()) {
+        requirements = analyzeRequirements(businessRequirements);
+        setExtractedRequirements(requirements);
+      }
 
-      const analysis = analyzeDataWithRequirement(data);
+      setLoadingMessage('Generating AI dashboard...');
+
+      // Map requirements to data
+      if (requirements) {
+        const mapped = mapRequirementsToData(requirements, parsed.headers);
+        setMappedData(mapped);
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      const requirementText = requirements?.objectives?.join('. ') || businessRequirements || undefined;
+      const analysis = analyzeDataWithRequirement(data, requirementText);
       const dashboard = generateDashboardData(data, parsed);
       setResult(analysis);
       setDashboardData(dashboard);
+
+      // Auto-switch to AI dashboard if requirements were provided
+      if (requirements) {
+        setViewMode('ai-dashboard');
+      }
     } catch (err) {
       setError('Failed to analyze file. Please ensure the file is not corrupted.');
-      console.error(err);
-    } finally {
-      setAnalyzing(false);
-      setLoadingMessage('');
-    }
-  };
-
-  const handleCustomReport = async () => {
-    if (!file) {
-      setError('Please upload a file first.');
-      return;
-    }
-
-    if (!customRequirement.trim()) {
-      setError('Please enter a custom requirement.');
-      return;
-    }
-
-    setAnalyzing(true);
-    setLoadingMessage('Processing data...');
-    setError('');
-
-    try {
-      let data = rawData;
-      if (!data) {
-        data = await parseFileContent(file);
-        setRawData(data);
-        const parsed = parseDataStructure(data);
-        setParsedData(parsed);
-      }
-
-      setLoadingMessage('Generating insights...');
-
-      await new Promise(resolve => setTimeout(resolve, 600));
-
-      const analysis = analyzeDataWithRequirement(data, customRequirement);
-
-      if (!dashboardData) {
-        const parsed = parseDataStructure(data);
-        const dashboard = generateDashboardData(data, parsed);
-        setDashboardData(dashboard);
-      }
-
-      setResult(analysis);
-    } catch (err) {
-      setError('Failed to generate custom report.');
       console.error(err);
     } finally {
       setAnalyzing(false);
@@ -453,25 +486,24 @@ function App() {
   const generateCSVReport = (result: AnalysisResult, dashboardData?: DashboardData | null): string => {
     let csv = 'Section,Content\n';
     csv += `"EXECUTIVE SUMMARY","${result.summary}"\n`;
-    result.keyNumbers.forEach((n, i) => csv += `"KEY INSIGHT ${i + 1}","${n}"\n`);
-    result.trends.forEach((t, i) => csv += `"TREND ${i + 1}","${t}"\n`);
-    result.metrics.forEach((m, i) => csv += `"METRIC ${i + 1}","${m}"\n`);
+    result.keyNumbers.forEach((n, i) => { csv += `"KEY INSIGHT ${i + 1}","${n}"\n`; });
+    result.trends.forEach((t, i) => { csv += `"TREND ${i + 1}","${t}"\n`; });
+    result.metrics.forEach((m, i) => { csv += `"METRIC ${i + 1}","${m}"\n`; });
     if (result.topRegion || dashboardData?.topRegion) {
       csv += `"TOP PERFORMING REGION","${result.topRegion || dashboardData?.topRegion}"\n`;
     }
     if (result.lowestRegion || dashboardData?.lowestRegion) {
       csv += `"LOWEST PERFORMING REGION","${result.lowestRegion || dashboardData?.lowestRegion}"\n`;
     }
-    result.issues.forEach((issue, i) => csv += `"ISSUE ${i + 1}","${issue}"\n`);
-    result.actions.forEach((a, i) => csv += `"ACTION ${i + 1}","${a}"\n`);
+    result.issues.forEach((issue, i) => { csv += `"ISSUE ${i + 1}","${issue}"\n`; });
+    result.actions.forEach((a, i) => { csv += `"ACTION ${i + 1}","${a}"\n`; });
     return csv;
   };
 
   const formatReport = (result: AnalysisResult, dashboardData?: DashboardData | null): string => {
     let report = '';
-
     report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
-    report += `        OPERATIONS ANALYSIS REPORT\n`;
+    report += `        AI DASHBOARD REPORT\n`;
     report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
 
     report += `\n${'─'.repeat(40)}\n`;
@@ -488,24 +520,6 @@ function App() {
       });
     }
 
-    if (result.trends.length > 0) {
-      report += `\n${'─'.repeat(40)}\n`;
-      report += `TRENDS\n`;
-      report += `${'─'.repeat(40)}\n\n`;
-      result.trends.forEach((t, i) => {
-        report += `    ${i + 1}. ${t}\n`;
-      });
-    }
-
-    if (result.metrics.length > 0) {
-      report += `\n${'─'.repeat(40)}\n`;
-      report += `METRICS\n`;
-      report += `${'─'.repeat(40)}\n\n`;
-      result.metrics.forEach((m, i) => {
-        report += `    ${i + 1}. ${m}\n`;
-      });
-    }
-
     const topRegion = result.topRegion || dashboardData?.topRegion;
     const lowestRegion = result.lowestRegion || dashboardData?.lowestRegion;
 
@@ -517,24 +531,6 @@ function App() {
       if (lowestRegion) report += `    Lowest Performing Region: ${lowestRegion}\n`;
     }
 
-    if (result.issues.length > 0) {
-      report += `\n${'─'.repeat(40)}\n`;
-      report += `ISSUES\n`;
-      report += `${'─'.repeat(40)}\n\n`;
-      result.issues.forEach((issue, i) => {
-        report += `    ${i + 1}. ${issue}\n`;
-      });
-    }
-
-    if (result.actions.length > 0) {
-      report += `\n${'─'.repeat(40)}\n`;
-      report += `RECOMMENDED ACTIONS\n`;
-      report += `${'─'.repeat(40)}\n\n`;
-      result.actions.forEach((a, i) => {
-        report += `    ${i + 1}. ${a}\n`;
-      });
-    }
-
     report += `\n${'━'.repeat(40)}\n`;
     report += `        END OF REPORT\n`;
     report += `${'━'.repeat(40)}\n`;
@@ -544,374 +540,307 @@ function App() {
 
   return (
     <div className="min-h-screen bg-[#1a4d2e] text-white">
-      <div className="container mx-auto px-4 py-12 max-w-4xl">
-        <header className="text-center mb-12">
-          <div className="flex items-center justify-center gap-3 mb-4">
-            <FileText className="w-10 h-10" />
-            <h1 className="text-4xl font-bold tracking-tight">AI Ops Report Analyst</h1>
+      <div className="container mx-auto px-4 py-8 max-w-5xl">
+        <header className="text-center mb-8">
+          <div className="flex items-center justify-center gap-3 mb-3">
+            <BarChart3 className="w-10 h-10 text-[#4ade80]" />
+            <h1 className="text-3xl font-bold tracking-tight">AI Dashboard Generator</h1>
           </div>
           <p className="text-[#a7c4bc] text-lg">
-            Upload your business data files and get instant professional analysis
+            Upload your data and business requirements to generate intelligent dashboards
           </p>
         </header>
 
-        <main className="space-y-8">
-          <section className="bg-[#0d2818] rounded-2xl p-8 shadow-xl border border-[#2d5a3d]">
-            <h2 className="text-xl font-semibold mb-6 flex items-center gap-2">
+        <main className="space-y-6">
+          {/* Data Upload Section */}
+          <section className="bg-[#0d2818] rounded-2xl p-6 shadow-xl border border-[#2d5a3d]">
+            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
               <Upload className="w-5 h-5" />
-              Upload Your Data
+              Upload Data File
             </h2>
 
-            <div className="space-y-6">
-              <div className="relative">
-                <input
-                  type="file"
-                  accept=".csv,.xlsx,.txt"
-                  onChange={handleFileUpload}
-                  className="hidden"
-                  id="file-upload"
-                />
-                <label
-                  htmlFor="file-upload"
-                  className="flex items-center justify-center w-full h-32 border-2 border-dashed border-[#3d6b4d] rounded-xl cursor-pointer hover:border-[#5a9a6f] hover:bg-[#1a5a35] transition-all duration-200"
-                >
-                  <div className="text-center">
-                    <Upload className="w-8 h-8 mx-auto mb-2 text-[#5a9a6f]" />
-                    <p className="text-[#a7c4bc]">
-                      {file ? file.name : 'Click or drag to upload CSV, Excel, or TXT file'}
-                    </p>
-                    <p className="text-sm text-[#6b9a85] mt-1">Maximum file size: 10MB</p>
-                  </div>
-                </label>
-              </div>
-
-              {file && (
-                <div className="flex items-center gap-3 p-4 bg-[#2d5a3d] rounded-lg">
-                  <CheckCircle className="w-5 h-5 text-[#4ade80]" />
-                  <div>
-                    <p className="font-medium">{file.name}</p>
-                    <p className="text-sm text-[#a7c4bc]">
-                      {(file.size / 1024).toFixed(2)} KB uploaded
-                    </p>
-                  </div>
+            <div className="relative">
+              <input
+                type="file"
+                accept=".csv,.xlsx,.txt"
+                onChange={handleFileUpload}
+                className="hidden"
+                id="file-upload"
+              />
+              <label
+                htmlFor="file-upload"
+                className="flex items-center justify-center w-full h-28 border-2 border-dashed border-[#3d6b4d] rounded-xl cursor-pointer hover:border-[#5a9a6f] hover:bg-[#1a5a35] transition-all duration-200"
+              >
+                <div className="text-center">
+                  <Upload className="w-7 h-7 mx-auto mb-2 text-[#5a9a6f]" />
+                  <p className="text-[#a7c4bc]">
+                    {file ? file.name : 'Click or drag to upload CSV, Excel, or TXT file'}
+                  </p>
+                  <p className="text-sm text-[#6b9a85] mt-1">Maximum file size: 10MB</p>
                 </div>
-              )}
-
-              <div className="space-y-2">
-                <label className="text-[#a7c4bc] text-sm font-medium">
-                  Custom Requirement (Optional)
-                </label>
-                <input
-                  type="text"
-                  value={customRequirement}
-                  onChange={(e) => setCustomRequirement(e.target.value)}
-                  placeholder="e.g., Focus on churn, Show only revenue trends..."
-                  className="w-full px-4 py-3 bg-[#1a4d2e] border border-[#3d6b4d] rounded-xl text-white placeholder-[#6b9a85] focus:outline-none focus:border-[#5a9a6f] transition-colors"
-                />
-              </div>
-
-              {error && (
-                <div className="flex items-center gap-3 p-4 bg-[#4d1a1a] rounded-lg border border-[#8b3a3a]">
-                  <AlertCircle className="w-5 h-5 text-[#f87171] flex-shrink-0" />
-                  <p className="text-[#fca5a5]">{error}</p>
-                </div>
-              )}
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <button
-                  onClick={handleAnalyze}
-                  disabled={!file || analyzing}
-                  className="py-4 px-6 bg-[#2d7a4e] hover:bg-[#3d9a5e] disabled:bg-[#1d4a2e] disabled:cursor-not-allowed rounded-xl font-semibold transition-all duration-200 flex items-center justify-center gap-2"
-                >
-                  {analyzing ? (
-                    <>
-                      <Loader2 className="w-5 h-5 animate-spin" />
-                      Analyzing...
-                    </>
-                  ) : (
-                    <>
-                      <FileText className="w-5 h-5" />
-                      Analyze Report
-                    </>
-                  )}
-                </button>
-
-                <button
-                  onClick={handleCustomReport}
-                  disabled={!file || analyzing || !customRequirement.trim()}
-                  className="py-4 px-6 bg-[#3d5a4d] hover:bg-[#4d6a5d] disabled:bg-[#1d4a2e] disabled:cursor-not-allowed rounded-xl font-semibold transition-all duration-200 flex items-center justify-center gap-2"
-                >
-                  {analyzing ? (
-                    <>
-                      <Loader2 className="w-5 h-5 animate-spin" />
-                      Processing...
-                    </>
-                  ) : (
-                    <>
-                      <FileSpreadsheet className="w-5 h-5" />
-                      Generate Custom Report
-                    </>
-                  )}
-                </button>
-              </div>
+              </label>
             </div>
+
+            {file && (
+              <div className="flex items-center gap-3 p-3 bg-[#2d5a3d] rounded-lg mt-3">
+                <CheckCircle className="w-4 h-4 text-[#4ade80]" />
+                <div>
+                  <p className="font-medium text-sm">{file.name}</p>
+                  <p className="text-xs text-[#a7c4bc]">{(file.size / 1024).toFixed(2)} KB</p>
+                </div>
+              </div>
+            )}
           </section>
 
+          {/* Business Requirements Section */}
+          <section className="bg-[#0d2818] rounded-2xl p-6 shadow-xl border border-[#2d5a3d]">
+            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
+              <FileUp className="w-5 h-5" />
+              Business Requirements (Optional)
+            </h2>
+
+            <p className="text-sm text-[#a7c4bc] mb-4">
+              Upload a requirements document (DOCX, PDF, TXT) or paste your requirements below. The AI will automatically extract objectives, KPIs, and generate a tailored dashboard.
+            </p>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="text-sm text-[#a7c4bc] block mb-2">Requirements Document</label>
+                <input
+                  type="file"
+                  accept=".docx,.pdf,.txt"
+                  onChange={handleRequirementsUpload}
+                  className="hidden"
+                  id="requirements-upload"
+                />
+                <label
+                  htmlFor="requirements-upload"
+                  className="flex items-center justify-center w-full h-20 border-2 border-dashed border-[#3d6b4d] rounded-xl cursor-pointer hover:border-[#5a9a6f] hover:bg-[#1a5a35] transition-all duration-200"
+                >
+                  <div className="text-center">
+                    <FileUp className="w-5 h-5 mx-auto mb-1 text-[#5a9a6f]" />
+                    <p className="text-sm text-[#a7c4bc]">
+                      {requirementsFile ? requirementsFile.name : 'Upload DOCX, PDF, or TXT'}
+                    </p>
+                  </div>
+                </label>
+              </div>
+
+              <div>
+                <label className="text-sm text-[#a7c4bc] block mb-2">Or Paste Requirements</label>
+                <textarea
+                  value={businessRequirements}
+                  onChange={(e) => setBusinessRequirements(e.target.value)}
+                  placeholder="E.g., 'Analyze monthly revenue by region. Show KPIs for total transactions, average order value, growth rate. Create charts for category distribution and trend analysis...'"
+                  className="w-full h-20 px-3 py-2 bg-[#1a4d2e] border border-[#3d6b4d] rounded-xl text-white placeholder-[#6b9a85] focus:outline-none focus:border-[#5a9a6f] resize-none text-sm"
+                />
+              </div>
+            </div>
+
+            {requirementsFile && (
+              <div className="flex items-center justify-between p-3 bg-[#2d5a3d] rounded-lg mb-4">
+                <div className="flex items-center gap-3">
+                  <CheckCircle className="w-4 h-4 text-[#4ade80]" />
+                  <div>
+                    <p className="font-medium text-sm">{requirementsFile.name}</p>
+                    <p className="text-xs text-[#a7c4bc]">{(requirementsFile.size / 1024).toFixed(2)} KB</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setRequirementsFile(null)}
+                  className="p-1 hover:bg-[#1a4d2e] rounded"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
+            {error && (
+              <div className="flex items-center gap-3 p-3 bg-[#4d1a1a] rounded-lg border border-[#8b3a3a] mb-4">
+                <AlertCircle className="w-4 h-4 text-[#f87171] flex-shrink-0" />
+                <p className="text-[#fca5a5] text-sm">{error}</p>
+              </div>
+            )}
+
+            <button
+              onClick={handleAnalyze}
+              disabled={!file || analyzing}
+              className="w-full py-3 px-6 bg-[#2d7a4e] hover:bg-[#3d9a5e] disabled:bg-[#1d4a2e] disabled:cursor-not-allowed rounded-xl font-semibold transition-all duration-200 flex items-center justify-center gap-2"
+            >
+              {analyzing ? (
+                <>
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  {loadingMessage || 'Analyzing...'}
+                </>
+              ) : (
+                <>
+                  <BarChart3 className="w-5 h-5" />
+                  Generate AI Dashboard
+                </>
+              )}
+            </button>
+          </section>
+
+          {/* Loading State */}
           {analyzing && loadingMessage && (
             <section className="bg-[#0d2818] rounded-2xl p-8 shadow-xl border border-[#2d5a3d]">
               <div className="flex flex-col items-center justify-center space-y-4">
                 <Loader2 className="w-12 h-12 text-[#4ade80] animate-spin" />
                 <p className="text-xl font-medium text-[#a7c4bc]">{loadingMessage}</p>
-                <p className="text-sm text-[#6b9a85]">Please wait while we process your data</p>
+                <p className="text-sm text-[#6b9a85]">AI is analyzing your data and requirements</p>
               </div>
             </section>
           )}
 
-          {dashboardData && (
-            <section className="bg-[#0d2818] rounded-2xl p-6 shadow-xl border border-[#2d5a3d]">
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="text-xl font-semibold flex items-center gap-2">
-                  <LayoutDashboard className="w-5 h-5" />
-                  {viewMode === 'report' ? 'Report View' : 'Dashboard View'}
-                </h2>
-                <button
-                  onClick={() => setViewMode(viewMode === 'report' ? 'dashboard' : 'report')}
-                  className="px-4 py-2 bg-[#2d5a3d] hover:bg-[#3d7a5d] rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
-                >
-                  <LayoutDashboard className="w-4 h-4" />
-                  View {viewMode === 'report' ? 'Dashboard' : 'Report'}
-                </button>
-              </div>
-
-              {viewMode === 'dashboard' ? (
-                <div className="space-y-6">
-                  <h3 className="text-center text-2xl font-bold text-[#4ade80] mb-6">
-                    Business Performance Dashboard
-                  </h3>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                    <div className="bg-[#1a4d2e] rounded-xl p-5 border border-[#3d6b4d]">
-                      <p className="text-[#a7c4bc] text-sm mb-2">Revenue</p>
-                      <p className="text-2xl font-bold text-[#4ade80]">
-                        ${dashboardData.totalRevenue.toLocaleString(undefined, {maximumFractionDigits: 0})}
-                      </p>
-                      {dashboardData.revenueChange !== undefined && (
-                        <p className={`text-sm mt-2 font-medium ${dashboardData.revenueChange >= 0 ? 'text-[#4ade80]' : 'text-[#f87171]'}`}>
-                          {dashboardData.revenueChange >= 0 ? '↑' : '↓'} {Math.abs(dashboardData.revenueChange).toFixed(1)}%
-                        </p>
-                      )}
-                    </div>
-                    <div className="bg-[#1a4d2e] rounded-xl p-5 border border-[#3d6b4d]">
-                      <p className="text-[#a7c4bc] text-sm mb-2">Churn Rate</p>
-                      <p className="text-2xl font-bold text-[#fbbf24]">
-                        {dashboardData.churnRate !== undefined ? `${dashboardData.churnRate.toFixed(1)}%` : 'N/A'}
-                      </p>
-                      {dashboardData.churnChange !== undefined && (
-                        <p className={`text-sm mt-2 font-medium ${dashboardData.churnChange <= 0 ? 'text-[#4ade80]' : 'text-[#f87171]'}`}>
-                          {dashboardData.churnChange <= 0 ? '↓' : '↑'} {Math.abs(dashboardData.churnChange).toFixed(1)}%
-                        </p>
-                      )}
-                    </div>
-                    <div className="bg-[#1a4d2e] rounded-xl p-5 border border-[#3d6b4d]">
-                      <p className="text-[#a7c4bc] text-sm mb-2">Total Customers</p>
-                      <p className="text-2xl font-bold text-[#60a5fa]">
-                        {dashboardData.totalCustomers.toLocaleString()}
-                      </p>
-                    </div>
-                    <div className="bg-[#1a4d2e] rounded-xl p-5 border border-[#3d6b4d]">
-                      <p className="text-[#a7c4bc] text-sm mb-2">Total Records</p>
-                      <p className="text-2xl font-bold text-[#c4b5fd]">
-                        {dashboardData.metrics[0]?.value || 'N/A'}
-                      </p>
-                    </div>
-                  </div>
-
-                  {(dashboardData.topRegion || dashboardData.lowestRegion) && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div className="bg-[#1a4d2e] rounded-xl p-5 border border-[#4ade80]">
-                        <p className="text-[#4ade80] text-sm mb-1 font-medium">Top Performing Region</p>
-                        <p className="text-xl font-bold">{dashboardData.topRegion || 'N/A'}</p>
-                      </div>
-                      <div className="bg-[#1a4d2e] rounded-xl p-5 border border-[#f87171]">
-                        <p className="text-[#f87171] text-sm mb-1 font-medium">Lowest Performing Region</p>
-                        <p className="text-xl font-bold">{dashboardData.lowestRegion || 'N/A'}</p>
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="bg-[#1a4d2e] rounded-xl p-5 border border-[#3d6b4d]">
-                    <h4 className="text-lg font-semibold mb-4">Region Summary</h4>
-                    <div className="space-y-3">
-                      {dashboardData.regions.map((region, i) => (
-                        <div key={i} className="flex items-center justify-between text-[#a7c4bc]">
-                          <span className="flex items-center gap-2">
-                            {i === 0 && dashboardData.topRegion === region.name && (
-                              <span className="text-[#4ade80]">★</span>
-                            )}
-                            {region.name}
-                          </span>
-                          <span className="font-medium text-white">{region.count} records</span>
-                        </div>
-                      ))}
-                    </div>
+          {/* Results Section */}
+          {result && parsedData && dashboardData && !analyzing && (
+            <>
+              {/* View Mode Toggle */}
+              <section className="bg-[#0d2818] rounded-2xl p-4 shadow-xl border border-[#2d5a3d]">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-lg font-semibold flex items-center gap-2">
+                    <LayoutDashboard className="w-5 h-5" />
+                    Dashboard View
+                  </h2>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setViewMode('report')}
+                      className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                        viewMode === 'report' ? 'bg-[#2d7a4e] text-white' : 'bg-[#1a4d2e] text-[#a7c4bc] hover:bg-[#2d5a3d]'
+                      }`}
+                    >
+                      Report
+                    </button>
+                    <button
+                      onClick={() => setViewMode('dashboard')}
+                      className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                        viewMode === 'dashboard' ? 'bg-[#2d7a4e] text-white' : 'bg-[#1a4d2e] text-[#a7c4bc] hover:bg-[#2d5a3d]'
+                      }`}
+                    >
+                      Charts
+                    </button>
+                    <button
+                      onClick={() => setViewMode('ai-dashboard')}
+                      className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                        viewMode === 'ai-dashboard' ? 'bg-[#fbbf24] text-[#0d2818]' : 'bg-[#fbbf24]/20 text-[#fbbf24] hover:bg-[#fbbf24]/30'
+                      }`}
+                    >
+                      AI Dashboard
+                    </button>
                   </div>
                 </div>
-              ) : result && (
-                <div className="space-y-6">
-                  {result.headline && (
-                    <div className="text-center py-4 border-b border-[#3d6b4d]">
-                      <h3 className="text-xl font-bold text-[#4ade80]">{result.headline}</h3>
-                    </div>
-                  )}
+              </section>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                    {result.keyNumbers.map((num, i) => (
-                      <div key={i} className="bg-[#1a4d2e] rounded-xl p-4 border border-[#3d6b4d] text-center">
-                        <p className="text-lg font-bold text-[#fbbf24]">{num}</p>
-                      </div>
-                    ))}
-                  </div>
-
-                  {(result.topRegion || result.lowestRegion || dashboardData?.topRegion || dashboardData?.lowestRegion) && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div className="bg-[#1a4d2e] rounded-xl p-5 border border-[#4ade80]">
-                        <p className="text-[#4ade80] text-sm mb-1 font-medium">Top Performing Region</p>
-                        <p className="text-xl font-bold">{result.topRegion || dashboardData?.topRegion || 'N/A'}</p>
-                      </div>
-                      <div className="bg-[#1a4d2e] rounded-xl p-5 border border-[#f87171]">
-                        <p className="text-[#f87171] text-sm mb-1 font-medium">Lowest Performing Region</p>
-                        <p className="text-xl font-bold">{result.lowestRegion || dashboardData?.lowestRegion || 'N/A'}</p>
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="space-y-5">
-                    <div className="bg-[#1a4d2e] rounded-xl p-5 border border-[#3d6b4d]">
-                      <h4 className="text-lg font-semibold text-[#4ade80] mb-3 flex items-center gap-2">
-                        <span className="w-2 h-2 bg-[#4ade80] rounded-full"></span>
-                        Executive Summary
-                      </h4>
-                      <p className="text-[#a7c4bc] leading-relaxed">{result.summary}</p>
-                    </div>
-
-                    {result.trends.length > 0 && (
-                      <div className="bg-[#1a4d2e] rounded-xl p-5 border border-[#3d6b4d]">
-                        <h4 className="text-lg font-semibold text-[#60a5fa] mb-3 flex items-center gap-2">
-                          <span className="w-2 h-2 bg-[#60a5fa] rounded-full"></span>
-                          Key Insights
-                        </h4>
-                        <ul className="space-y-2">
-                          {result.trends.map((trend, i) => (
-                            <li key={i} className="text-[#a7c4bc] flex items-start gap-2">
-                              <span className="text-[#60a5fa] mt-1">•</span>
-                              <span>{trend}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-
-                    {result.metrics.length > 0 && (
-                      <div className="bg-[#1a4d2e] rounded-xl p-5 border border-[#3d6b4d]">
-                        <h4 className="text-lg font-semibold text-[#fbbf24] mb-3 flex items-center gap-2">
-                          <span className="w-2 h-2 bg-[#fbbf24] rounded-full"></span>
-                          Metrics
-                        </h4>
-                        <ul className="space-y-2">
-                          {result.metrics.map((metric, i) => (
-                            <li key={i} className="text-[#a7c4bc] flex items-start gap-2">
-                              <span className="text-[#fbbf24] mt-1">•</span>
-                              <span>{metric}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-
-                    {result.issues.length > 0 && (
-                      <div className="bg-[#1a4d2e] rounded-xl p-5 border border-[#f87171]/30">
-                        <h4 className="text-lg font-semibold text-[#f87171] mb-3 flex items-center gap-2">
-                          <span className="w-2 h-2 bg-[#f87171] rounded-full"></span>
-                          Issues
-                        </h4>
-                        <ul className="space-y-2">
-                          {result.issues.map((issue, i) => (
-                            <li key={i} className="text-[#a7c4bc] flex items-start gap-2">
-                              <span className="text-[#f87171] mt-1">•</span>
-                              <span>{issue}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-
-                    {result.actions.length > 0 && (
-                      <div className="bg-[#1a4d2e] rounded-xl p-5 border border-[#3d6b4d]">
-                        <h4 className="text-lg font-semibold text-[#c4b5fd] mb-3 flex items-center gap-2">
-                          <span className="w-2 h-2 bg-[#c4b5fd] rounded-full"></span>
-                          Recommended Actions
-                        </h4>
-                        <ul className="space-y-2">
-                          {result.actions.map((action, i) => (
-                            <li key={i} className="text-[#a7c4bc] flex items-start gap-2">
-                              <span className="w-5 h-5 bg-[#c4b5fd]/20 rounded text-[#c4b5fd] flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">
-                                {i + 1}
-                              </span>
-                              <span>{action}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                  </div>
-                </div>
+              {/* AI Dashboard */}
+              {viewMode === 'ai-dashboard' && (
+                <AIDashboardGenerator
+                  data={{ headers: parsedData.headers, rows: parsedData.rows }}
+                  requirements={extractedRequirements}
+                  mappedKPIs={mappedData?.mappedKPIs}
+                  mappedDimensions={mappedData?.mappedDimensions}
+                  recommendedCharts={mappedData?.recommendedCharts}
+                />
               )}
-            </section>
-          )}
 
-          {result && viewMode === 'report' && (
-            <section className="bg-[#0d2818] rounded-2xl p-6 shadow-xl border border-[#2d5a3d]">
-              <h2 className="text-xl font-semibold mb-6 flex items-center gap-2">
-                <Download className="w-5 h-5" />
-                Export Report
-              </h2>
+              {/* Legacy Views */}
+              {viewMode !== 'ai-dashboard' && (
+                <>
+                  {viewMode === 'dashboard' && (
+                    <NativeDashboard
+                      data={{ headers: parsedData.headers, rows: parsedData.rows }}
+                      summary={{
+                        totalRevenue: dashboardData.totalRevenue,
+                        revenueChange: dashboardData.revenueChange,
+                        totalCustomers: dashboardData.totalCustomers,
+                        churnRate: dashboardData.churnRate,
+                        churnChange: dashboardData.churnChange,
+                        regions: dashboardData.regions,
+                        topRegion: dashboardData.topRegion,
+                        lowestRegion: dashboardData.lowestRegion
+                      }}
+                    />
+                  )}
 
-              <div className="grid grid-cols-3 gap-4">
-                <button
-                  onClick={() => handleDownload('txt')}
-                  className="py-3 px-4 bg-[#2d5a3d] hover:bg-[#3d7a5d] rounded-lg font-medium transition-colors flex items-center justify-center gap-2"
-                >
-                  <Download className="w-4 h-4" />
-                  Download TXT
-                </button>
-                <button
-                  onClick={() => handleDownload('csv')}
-                  className="py-3 px-4 bg-[#2d5a3d] hover:bg-[#3d7a5d] rounded-lg font-medium transition-colors flex items-center justify-center gap-2"
-                >
-                  <Download className="w-4 h-4" />
-                  Download CSV
-                </button>
-                <button
-                  onClick={() => setShowDashboard(!showDashboard)}
-                  className="py-3 px-4 bg-[#fbbf24]/20 hover:bg-[#fbbf24]/30 border border-[#fbbf24] rounded-lg font-medium transition-colors flex items-center justify-center gap-2 text-[#fbbf24]"
-                >
-                  <BarChart3 className="w-4 h-4" />
-                  Dashboard
-                </button>
-              </div>
-            </section>
-          )}
+                  {viewMode === 'report' && (
+                    <section className="bg-[#0d2818] rounded-2xl p-6 shadow-xl border border-[#2d5a3d]">
+                      <div className="space-y-5">
+                        {result.headline && (
+                          <div className="text-center py-4 border-b border-[#3d6b4d]">
+                            <h3 className="text-xl font-bold text-[#4ade80]">{result.headline}</h3>
+                          </div>
+                        )}
 
-          {showDashboard && parsedData && dashboardData && (
-            <NativeDashboard
-              data={parsedData}
-              summary={dashboardData}
-            />
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                          {result.keyNumbers.map((num, i) => (
+                            <div key={i} className="bg-[#1a4d2e] rounded-xl p-4 border border-[#3d6b4d] text-center">
+                              <p className="text-lg font-bold text-[#fbbf24]">{num}</p>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div className="bg-[#1a4d2e] rounded-xl p-5 border border-[#3d6b4d]">
+                          <h4 className="text-lg font-semibold text-[#4ade80] mb-3">Executive Summary</h4>
+                          <p className="text-[#a7c4bc] leading-relaxed">{result.summary}</p>
+                        </div>
+
+                        {extractedRequirements && (
+                          <div className="bg-[#1a4d2e] rounded-xl p-5 border border-[#fbbf24]/30">
+                            <h4 className="text-lg font-semibold text-[#fbbf24] mb-3">Requirements Analysis</h4>
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                              <div>
+                                <p className="text-sm text-[#a7c4bc] mb-1">Objectives</p>
+                                <p className="text-[#4ade80] font-medium">{extractedRequirements.objectives.length}</p>
+                              </div>
+                              <div>
+                                <p className="text-sm text-[#a7c4bc] mb-1">KPIs</p>
+                                <p className="text-[#60a5fa] font-medium">{extractedRequirements.kpis.length}</p>
+                              </div>
+                              <div>
+                                <p className="text-sm text-[#a7c4bc] mb-1">Dimensions</p>
+                                <p className="text-[#c4b5fd] font-medium">{extractedRequirements.dimensions.length}</p>
+                              </div>
+                              <div>
+                                <p className="text-sm text-[#a7c4bc] mb-1">Confidence</p>
+                                <p className="text-[#fbbf24] font-medium">{extractedRequirements.confidence}%</p>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </section>
+                  )}
+
+                  {/* Export Section */}
+                  <section className="bg-[#0d2818] rounded-2xl p-6 shadow-xl border border-[#2d5a3d]">
+                    <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
+                      <Download className="w-5 h-5" />
+                      Export Report
+                    </h2>
+                    <div className="grid grid-cols-2 gap-4">
+                      <button
+                        onClick={() => handleDownload('txt')}
+                        className="py-3 px-4 bg-[#2d5a3d] hover:bg-[#3d7a5d] rounded-lg font-medium transition-colors flex items-center justify-center gap-2"
+                      >
+                        <FileText className="w-4 h-4" />
+                        Download TXT
+                      </button>
+                      <button
+                        onClick={() => handleDownload('csv')}
+                        className="py-3 px-4 bg-[#2d5a3d] hover:bg-[#3d7a5d] rounded-lg font-medium transition-colors flex items-center justify-center gap-2"
+                      >
+                        <FileSpreadsheet className="w-4 h-4" />
+                        Download CSV
+                      </button>
+                    </div>
+                  </section>
+                </>
+              )}
+            </>
           )}
         </main>
 
-        <footer className="mt-16 text-center text-[#6b9a85] text-sm">
-          <p>Supports CSV, Excel (.xlsx), and TXT file formats</p>
+        <footer className="mt-8 text-center text-[#6b9a85] text-sm">
+          <p>Supports CSV, Excel (.xlsx), TXT, DOCX, and PDF file formats</p>
         </footer>
       </div>
     </div>
