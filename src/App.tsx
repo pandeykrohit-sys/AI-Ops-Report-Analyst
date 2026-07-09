@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react';
 import {
   Upload, FileText, AlertCircle, CheckCircle, LayoutDashboard,
-  FileSpreadsheet, Download, Loader2, BarChart3, FileUp, X
+  FileSpreadsheet, Download, Loader2, BarChart3, FileUp, X, Sparkles
 } from 'lucide-react';
 import { AIDashboardGenerator } from './components/AIDashboardGenerator';
 import { NativeDashboard } from './components/NativeDashboard';
@@ -662,23 +662,43 @@ function App() {
               </div>
             )}
 
-            <button
-              onClick={handleAnalyze}
-              disabled={!file || analyzing}
-              className="w-full py-3 px-6 bg-[#2d7a4e] hover:bg-[#3d9a5e] disabled:bg-[#1d4a2e] disabled:cursor-not-allowed rounded-xl font-semibold transition-all duration-200 flex items-center justify-center gap-2"
-            >
-              {analyzing ? (
-                <>
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  {loadingMessage || 'Analyzing...'}
-                </>
-              ) : (
-                <>
-                  <BarChart3 className="w-5 h-5" />
-                  Generate AI Dashboard
-                </>
-              )}
-            </button>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <button
+                onClick={handleAnalyze}
+                disabled={!file || analyzing}
+                className="py-3 px-6 bg-[#2d7a4e] hover:bg-[#3d9a5e] disabled:bg-[#1d4a2e] disabled:cursor-not-allowed rounded-xl font-semibold transition-all duration-200 flex items-center justify-center gap-2"
+              >
+                {analyzing ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    {loadingMessage || 'Analyzing...'}
+                  </>
+                ) : (
+                  <>
+                    <BarChart3 className="w-5 h-5" />
+                    Generate AI Dashboard
+                  </>
+                )}
+              </button>
+
+              <button
+                onClick={handleAnalyze}
+                disabled={!requirementsFile || !file || analyzing}
+                className="py-3 px-6 bg-gradient-to-r from-[#fbbf24] to-[#f59e0b] hover:from-[#fcd34d] hover:to-[#fbbf24] disabled:from-[#78350f] disabled:to-[#78350f] disabled:cursor-not-allowed rounded-xl font-semibold transition-all duration-200 flex items-center justify-center gap-2 text-[#0d2818]"
+              >
+                {analyzing ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                      Processing...
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-5 h-5" />
+                    Generate Dashboard From BRD
+                  </>
+                )}
+              </button>
+            </div>
           </section>
 
           {/* Loading State */}
