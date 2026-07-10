@@ -8,10 +8,13 @@ export interface ExtractedRequirements {
   objectives: string[];
   kpis: string[];
   measures: string[];
+  metrics: string[];
   dimensions: string[];
   filters: string[];
   chartRequirements: string[];
   businessGoals: string[];
+  businessRules: string[];
+  targets: string[];
   rawText: string;
   confidence: number;
 }
@@ -194,6 +197,36 @@ export function analyzeRequirements(text: string): ExtractedRequirements {
     }
   });
 
+  // Extract metrics (measurable values)
+  const metrics: string[] = [];
+  const metricKeywords = ['count', 'sum', 'average', 'total', 'rate', 'percentage', 'ratio', 'median', 'min', 'max', 'standard deviation', 'variance'];
+  metricKeywords.forEach(m => {
+    if (new RegExp(`\\b${m}\\b`, 'i').test(text)) {
+      metrics.push(m.charAt(0).toUpperCase() + m.slice(1));
+    }
+  });
+
+  // Extract business rules
+  const businessRules: string[] = [];
+  sentences.forEach(sentence => {
+    if (/rule|constraint|condition|must|should|require|exclude|include|only|if\\s+then|unless/i.test(sentence)) {
+      if (sentence.length > 15 && sentence.length < 200) {
+        businessRules.push(sentence.trim());
+      }
+    }
+  });
+
+  // Extract targets
+  const targets: string[] = [];
+  sentences.forEach(sentence => {
+    if (/target|benchmark|goal|threshold|kpi.*\\d|objective.*\\d/i.test(sentence)) {
+      const match = sentence.match(/(target|benchmark|goal|threshold)[:\\s]+([^.;]+)/i);
+      if (match) {
+        targets.push(match[0].trim());
+      }
+    }
+  });
+
   // Calculate confidence based on extracted content
   const confidence = Math.min(100,
     (objectives.length > 0 ? 20 : 0) +
@@ -208,26 +241,56 @@ export function analyzeRequirements(text: string): ExtractedRequirements {
     objectives: [...new Set(objectives)].slice(0, 10),
     kpis: [...new Set(kpis)].slice(0, 15),
     measures: [...new Set(measures)].slice(0, 10),
+    metrics: [...new Set(metrics)].slice(0, 10),
     dimensions: [...new Set(dimensions)].slice(0, 15),
     filters: [...new Set(filters)].slice(0, 10),
     chartRequirements: [...new Set(chartRequirements)].slice(0, 10),
     businessGoals: [...new Set(businessGoals)].slice(0, 10),
+    businessRules: [...new Set(businessRules)].slice(0, 10),
+    targets: [...new Set(targets)].slice(0, 10),
     rawText: text,
     confidence
   };
 }
 
+export interface RequirementMapping {
+  requirementName: string;
+  mappedField: string | null;
+  confidence: number;
+  type: 'KPI' | 'Dimension' | 'Filter' | 'Chart';
+  warning?: string;
+}
+
+export interface MappingResult {
+  mappedKPIs: { name: string; columns: string[]; aggregation: string; confidence: number }[];
+  mappedDimensions: { name: string; columns: string[]; confidence: number }[];
+  recommendedCharts: { type: string; title: string; dimension: string; metric: string; confidence: number }[];
+  requirementMappings: RequirementMapping[];
+  unmappedRequirements: RequirementMapping[];
+  overallMappingConfidence: number;
+}
+
+function calcMappingConfidence(reqName: string, fieldName: string): number {
+  const r = reqName.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const f = fieldName.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (r === f) return 100;
+  if (f.includes(r) || r.includes(f)) return 95;
+  const rWords = r.split(/\s+/).filter(w => w.length > 2);
+  const fWords = f.split(/\s+/).filter(w => w.length > 2);
+  const matched = rWords.filter(rw => fWords.some(fw => fw.includes(rw) || rw.includes(fw)));
+  if (rWords.length === 0) return 50;
+  return Math.round((matched.length / rWords.length) * 90);
+}
+
 export function mapRequirementsToData(
   requirements: ExtractedRequirements,
   headers: string[]
-): {
-  mappedKPIs: { name: string; columns: string[]; aggregation: string }[];
-  mappedDimensions: { name: string; columns: string[] };
-  recommendedCharts: { type: string; title: string; dimension: string; metric: string }[];
-} {
-  const mappedKPIs: { name: string; columns: string[]; aggregation: string }[] = [];
-  const mappedDimensions: { name: string; columns: string[] }[] = [];
-  const recommendedCharts: { type: string; title: string; dimension: string; metric: string }[] = [];
+): MappingResult {
+  const mappedKPIs: { name: string; columns: string[]; aggregation: string; confidence: number }[] = [];
+  const mappedDimensions: { name: string; columns: string[]; confidence: number }[] = [];
+  const recommendedCharts: { type: string; title: string; dimension: string; metric: string; confidence: number }[] = [];
+  const requirementMappings: RequirementMapping[] = [];
+  const unmappedRequirements: RequirementMapping[] = [];
 
   // Map KPIs to columns
   requirements.kpis.forEach(kpi => {
@@ -238,10 +301,26 @@ export function mapRequirementsToData(
     });
 
     if (matchingColumns.length > 0) {
+      const confidence = calcMappingConfidence(kpi, matchingColumns[0]);
       mappedKPIs.push({
         name: kpi,
         columns: matchingColumns,
-        aggregation: /rate|percentage|ratio/i.test(kpi) ? 'average' : 'sum'
+        aggregation: /rate|percentage|ratio/i.test(kpi) ? 'average' : 'sum',
+        confidence
+      });
+      requirementMappings.push({
+        requirementName: kpi,
+        mappedField: matchingColumns[0],
+        confidence,
+        type: 'KPI'
+      });
+    } else {
+      unmappedRequirements.push({
+        requirementName: kpi,
+        mappedField: null,
+        confidence: 0,
+        type: 'KPI',
+        warning: `No matching data column found for KPI "${kpi}"`
       });
     }
   });
@@ -251,29 +330,17 @@ export function mapRequirementsToData(
     const hLower = header.toLowerCase();
     if (/amount|total|sum|value|price|cost|fee|tax|profit|revenue|sales/i.test(hLower)) {
       if (!mappedKPIs.find(k => k.columns.includes(header))) {
-        mappedKPIs.push({
-          name: header,
-          columns: [header],
-          aggregation: 'sum'
-        });
+        mappedKPIs.push({ name: header, columns: [header], aggregation: 'sum', confidence: 85 });
       }
     }
     if (/count|quantity|number|qty/i.test(hLower)) {
       if (!mappedKPIs.find(k => k.columns.includes(header))) {
-        mappedKPIs.push({
-          name: header,
-          columns: [header],
-          aggregation: 'sum'
-        });
+        mappedKPIs.push({ name: header, columns: [header], aggregation: 'sum', confidence: 80 });
       }
     }
     if (/rate|percentage|ratio|avg|average/i.test(hLower)) {
       if (!mappedKPIs.find(k => k.columns.includes(header))) {
-        mappedKPIs.push({
-          name: header,
-          columns: [header],
-          aggregation: 'average'
-        });
+        mappedKPIs.push({ name: header, columns: [header], aggregation: 'average', confidence: 80 });
       }
     }
   });
@@ -287,9 +354,21 @@ export function mapRequirementsToData(
     });
 
     if (matchingColumns.length > 0) {
-      mappedDimensions.push({
-        name: dim,
-        columns: matchingColumns
+      const confidence = calcMappingConfidence(dim, matchingColumns[0]);
+      mappedDimensions.push({ name: dim, columns: matchingColumns, confidence });
+      requirementMappings.push({
+        requirementName: dim,
+        mappedField: matchingColumns[0],
+        confidence,
+        type: 'Dimension'
+      });
+    } else {
+      unmappedRequirements.push({
+        requirementName: dim,
+        mappedField: null,
+        confidence: 0,
+        type: 'Dimension',
+        warning: `No matching data column found for dimension "${dim}"`
       });
     }
   });
@@ -304,22 +383,27 @@ export function mapRequirementsToData(
         /channel|platform|source/i.test(hLower) ||
         /year|month|quarter|week|day|date/i.test(hLower)) {
       if (!mappedDimensions.find(d => d.columns.includes(header))) {
-        mappedDimensions.push({
-          name: header,
-          columns: [header]
-        });
+        mappedDimensions.push({ name: header, columns: [header], confidence: 85 });
       }
     }
   });
 
   // Generate recommended charts
   if (mappedDimensions.length > 0 && mappedKPIs.length > 0) {
+    const chartConf = 88;
     // Bar chart for top categories
     recommendedCharts.push({
       type: 'bar',
       title: `${mappedKPIs[0].name} by ${mappedDimensions[0].name}`,
       dimension: mappedDimensions[0].columns[0],
-      metric: mappedKPIs[0].columns[0]
+      metric: mappedKPIs[0].columns[0],
+      confidence: chartConf
+    });
+    requirementMappings.push({
+      requirementName: `${mappedKPIs[0].name} by ${mappedDimensions[0].name}`,
+      mappedField: `${mappedDimensions[0].columns[0]}, ${mappedKPIs[0].columns[0]}`,
+      confidence: chartConf,
+      type: 'Chart'
     });
 
     // Pie/Donut for distribution
@@ -328,7 +412,8 @@ export function mapRequirementsToData(
         type: 'donut',
         title: `${mappedDimensions[1].name} Distribution`,
         dimension: mappedDimensions[1].columns[0],
-        metric: mappedKPIs[0].columns[0]
+        metric: mappedKPIs[0].columns[0],
+        confidence: chartConf
       });
     }
 
@@ -341,7 +426,8 @@ export function mapRequirementsToData(
         type: 'line',
         title: `${mappedKPIs[0].name} Trend`,
         dimension: timeDim.columns[0],
-        metric: mappedKPIs[0].columns[0]
+        metric: mappedKPIs[0].columns[0],
+        confidence: 90
       });
     }
 
@@ -350,7 +436,8 @@ export function mapRequirementsToData(
       type: 'area',
       title: `${mappedKPIs[0].name} Over Time`,
       dimension: timeDim?.columns[0] || mappedDimensions[0].columns[0],
-      metric: mappedKPIs[0].columns[0]
+      metric: mappedKPIs[0].columns[0],
+      confidence: 85
     });
 
     // Stacked bar if multiple dimensions
@@ -359,10 +446,16 @@ export function mapRequirementsToData(
         type: 'stackedBar',
         title: `${mappedKPIs[0].name} by ${mappedDimensions[0].name} and ${mappedDimensions[1].name}`,
         dimension: mappedDimensions[0].columns[0],
-        metric: mappedKPIs[0].columns[0]
+        metric: mappedKPIs[0].columns[0],
+        confidence: 82
       });
     }
   }
 
-  return { mappedKPIs, mappedDimensions, recommendedCharts };
+  const allConfidences = requirementMappings.map(m => m.confidence).filter(c => c > 0);
+  const overallMappingConfidence = allConfidences.length > 0
+    ? Math.round(allConfidences.reduce((a, b) => a + b, 0) / allConfidences.length)
+    : 0;
+
+  return { mappedKPIs, mappedDimensions, recommendedCharts, requirementMappings, unmappedRequirements, overallMappingConfidence };
 }

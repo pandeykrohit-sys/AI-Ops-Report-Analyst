@@ -9,7 +9,8 @@ import {
   parseRequirementsDocument,
   analyzeRequirements,
   mapRequirementsToData,
-  ExtractedRequirements
+  ExtractedRequirements,
+  MappingResult
 } from './utils/requirementsAnalyzer';
 
 type AnalysisResult = {
@@ -43,17 +44,13 @@ function App() {
   const [analyzing, setAnalyzing] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState<string>('');
   const [result, setResult] = useState<AnalysisResult | null>(null);
-  const [rawData, setRawData] = useState<string>('');
+  const [, setRawData] = useState<string>('');
   const [businessRequirements, setBusinessRequirements] = useState<string>('');
   const [viewMode, setViewMode] = useState<'report' | 'dashboard' | 'ai-dashboard'>('report');
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(null);
   const [parsedData, setParsedData] = useState<{ headers: string[]; rows: string[][] } | null>(null);
   const [extractedRequirements, setExtractedRequirements] = useState<ExtractedRequirements | null>(null);
-  const [mappedData, setMappedData] = useState<{
-    mappedKPIs: { name: string; columns: string[]; aggregation: string }[];
-    mappedDimensions: { name: string; columns: string[] }[];
-    recommendedCharts: { type: string; title: string; dimension: string; metric: string }[];
-  } | null>(null);
+  const [mappedData, setMappedData] = useState<MappingResult | null>(null);
 
   const allowedTypes = [
     'text/csv',
@@ -162,9 +159,8 @@ function App() {
     const trends: string[] = [];
     const metrics: string[] = [];
     const issues: string[] = [];
-    const actions: string[] = [];
+    void _actions;
     const keyNumbers: string[] = [];
-
     Object.entries(numericColumns).forEach(([col, values]) => {
       if (values.length < 1) return;
 
@@ -252,13 +248,13 @@ function App() {
     };
   };
 
-  const generateDashboardData = (data: string, { headers, rows }: { headers: string[]; rows: string[][] }): DashboardData => {
+  const generateDashboardData = (_data: string, { headers, rows }: { headers: string[]; rows: string[][] }): DashboardData => {
     let totalRevenue = 0;
     let revenueChange: number | undefined;
     let totalCustomers = 0;
     let churnRate: number | undefined;
     let churnChange: number | undefined;
-    const regions: { name: string; count: number; revenue?: number }[] = [];
+    const _regions: { name: string; count: number; revenue?: number }[] = [];
     const regionMap: { [key: string]: { count: number; revenue: number; values: number[] } } = {};
 
     headers.forEach((header, idx) => {
@@ -759,6 +755,9 @@ function App() {
                   mappedKPIs={mappedData?.mappedKPIs}
                   mappedDimensions={mappedData?.mappedDimensions}
                   recommendedCharts={mappedData?.recommendedCharts}
+                  requirementMappings={mappedData?.requirementMappings}
+                  unmappedRequirements={mappedData?.unmappedRequirements}
+                  overallMappingConfidence={mappedData?.overallMappingConfidence}
                 />
               )}
 
