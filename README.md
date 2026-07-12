@@ -14,7 +14,7 @@ An AI-powered web application that converts raw business data (CSV / Excel / TXT
 - Custom report generation based on user input
 - Business performance dashboard
 - Key metrics (Revenue, Customers, Churn)
-- Download reports (TXT, CSV)
+- Download reports (TXT, CSV, PDF)
 
 ---
 
